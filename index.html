@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>VOID_CONSOLE - Full Experience</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+            color: #00ff66;
+            user-select: none;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .hud-panel {
+            background: rgba(10, 10, 10, 0.88);
+            border: 1px solid #00ff66;
+            padding: 15px;
+            pointer-events: auto;
+            max-width: 380px;
+            box-shadow: 0 0 12px rgba(0, 255, 102, 0.25);
+        }
+        h1 { font-size: 0.9rem; margin: 0 0 8px 0; letter-spacing: 2px; }
+        .log { font-size: 0.85rem; line-height: 1.4; color: #00ff66; }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 6px;
+            height: 6px;
+            background: rgba(0, 255, 102, 0.6);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+    </style>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="crosshair"></div>
+
+    <div id="ui-layer">
+        <div class="hud-panel">
+            <h1>[VOID_CONSOLE // SEC_01]</h1>
+            <div class="log" id="log-text">……おい。目を覚ませ。<br>完全な暗闇だ。怖じ気づいている場合か？<br><span style="color:#888; font-size:0.75rem;">（画面をタップして周囲を観察せよ）</span></div>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, raycaster;
+        let isRunning = false;
+        let spotlight, ambientLight;
+        let interactiveObjects = [];
+        let yaw = 0; // 左右視点角度
+        let currentPhase = 1;
+        
+        let isDragging = false;
+        let previousX = 0;
+        let touchStartX = 0;
+
+        // フラッシュライト制御用変数
+        let mediaStream = null;
+        let track = null;
+        let isTorchOn = false;
+
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x010101);
+            scene.fog = new THREE.FogExp2(0x010101, 0.1);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+
+            // 環境光（最初はほぼ真ッ暗）
+            ambientLight = new THREE.AmbientLight(0x020202);
+            scene.add(ambientLight);
+
+            // スポットライト（現実のフラッシュライトと連動）
+            spotlight = new THREE.SpotLight(0xccffdd, 0, 20, Math.PI / 5, 0.4, 1);
+            spotlight.position.set(0, 1.6, 0);
+            camera.add(spotlight);
+            scene.add(camera);
+
+            // 部屋の構築（無機質なコンクリート独房）
+            const roomGeo = new THREE.BoxGeometry(10, 4, 16);
+            const roomMat = new THREE.MeshBasicMaterial({ color: 0x101010, side: THREE.BackSide });
+            const room = new THREE.Mesh(roomGeo, roomMat);
+            room.position.set(0, 2, 0);
+            scene.add(room);
+
+            // 正面の認証パネル（干渉オブジェクト）
+            const panelGeo = new THREE.PlaneGeometry(1.4, 2.0);
+            const panelMat = new THREE.MeshBasicMaterial({ color: 0x003311, wireframe: true });
+            const panel = new THREE.Mesh(panelGeo, panelMat);
+            panel.position.set(0, 1.8, -7.8);
+            panel.name = "MAIN_PANEL";
+            scene.add(panel);
+            interactiveObjects.push(panel);
+
+            setupControls();
+            isRunning = true;
+            animate();
+        }
+
+        function updateLog(msg) {
+            document.getElementById('log-text').innerHTML = msg;
+        }
+
+        // 左右スワイプのみの視点操作 ＆ タップオブジェクト干渉
+        function setupControls() {
+            window.addEventListener('mousedown', (e) => { isDragging = true; previousX = e.clientX; });
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                let deltaX = e.clientX - previousX;
+                yaw -= deltaX * 0.003;
+                previousX = e.clientX;
+            });
+            window.addEventListener('mouseup', (e) => {
+                if (isDragging && Math.abs(e.clientX - previousX) < 5) { checkInteraction(); }
+                isDragging = false;
+            });
+
+            window.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    isDragging = true;
+                    previousX = e.touches[0].clientX;
+                    touchStartX = e.touches[0].clientX;
+                }
+            });
+            window.addEventListener('touchmove', (e) => {
+                if (!isDragging || e.touches.length !== 1) return;
+                let deltaX = e.touches[0].clientX - previousX;
+                yaw -= deltaX * 0.004;
+                previousX = e.touches[0].clientX;
+            });
+            window.addEventListener('touchend', (e) => {
+                if (isDragging && Math.abs(previousX - touchStartX) < 10) { checkInteraction(); }
+                isDragging = false;
+            });
+
+            // 初回クリック/タップで3D起動
+            window.addEventListener('click', () => {
+                if (!scene) init3D();
+            }, { once: true });
+        }
+
+        // オブジェクトをタップしたときの判定
+        async function checkInteraction() {
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(interactiveObjects);
+
+            if (intersects.length > 0) {
+                const obj = intersects[0].object;
+                
+                if (obj.name === "MAIN_PANEL") {
+                    if (currentPhase === 1) {
+                        if (!isTorchOn) {
+                            // まだライトがついていない場合：ハッカーがヒントを出し、背面ライト点灯を試みる
+                            updateLog("……真っ暗で何も見えないな。<br>ハッカー：『何をぼんやりしている？ お前の手元にある端末の「眼（ライト）」を覚ませよ』");
+                            
+                            // iPhoneの実際のフラッシュライト点灯を試みる
+                            let success = await togglePhysicalTorch(true);
+                            if (success) {
+                                isTorchOn = true;
+                                spotlight.intensity = 4.0;
+                                ambientLight.intensity = 0.15;
+                                updateLog("背面のフラッシュライトが起動した！<br>光が闇を切り裂き、前方のパネルに刻まれたコードが浮かび上がる。");
+                                if (navigator.vibrate) navigator.vibrate(100);
+                                currentPhase = 2;
+                            } else {
+                                // 万が一ライトが使えない環境のフォールバック
+                                spotlight.intensity = 3.0;
+                                ambientLight.intensity = 0.2;
+                                updateLog("画面の光で周囲を照らし出した。<br>パネルのコードがうっすらと見えてきたぞ。");
+                                currentPhase = 2;
+                            }
+                        } else {
+                            // ライト点灯状態で再度パネルを調べた場合
+                            updateLog("パネルの暗号入力を完了した。<br>ハッカー：『ふむ…悪くない。だが、次のプロトコルはもっと手強いぞ』");
+                            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                            
+                            // 次のフェーズへ（ここに次のギミックオブジェクトや展開を追加可能）
+                            obj.material.color.setHex(0x00ff66);
+                        }
+                    }
+                }
+            }
+        }
+
+        // iPhone / スマホの実際の背面LEDライト（Torch）を制御する関数
+        async function togglePhysicalTorch(turnOn) {
+            try {
+                if (!mediaStream) {
+                    mediaStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: { exact: 'environment' } }
+                    });
+                    track = mediaStream.getVideoTracks()[0];
+                }
+                const capabilities = track.getCapabilities();
+                if (capabilities.torch) {
+                    await track.applyConstraints({ advanced: [{ torch: turnOn }] });
+                    return true;
+                }
+                return false;
+            } catch (err) {
+                console.log("Torch error (fallback to screen light):", err);
+                return false;
+            }
+        }
+
+        // 3Dアニメーションループ
+        function animate() {
+            if (!isRunning) return;
+            requestAnimationFrame(animate);
+
+            // 左右回転（yaw）のみ適用
+            camera.rotation.y = yaw;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            if (!camera) return;
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
